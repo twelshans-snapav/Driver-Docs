@@ -236,7 +236,10 @@ def write_zip_output(zip_path, html_filename, html_content, manifest_content):
 # .c4i processing
 # ---------------------------------------------------------------------------
 
-def process_c4i(path):
+def process_c4i(path, source_dir=None, output_dir=None):
+    src = source_dir or SOURCE_DIR
+    out = output_dir or OUTPUT_DIR
+
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as exc:
@@ -256,16 +259,16 @@ def process_c4i(path):
         url       = url,
     )
 
-    rel           = path.relative_to(SOURCE_DIR)
+    rel           = path.relative_to(src)
     title_stem    = to_title_name(rel.stem) + " Driver Documentation"
     html_filename = title_stem + ".html"
-    zip_path      = OUTPUT_DIR / rel.parent / (title_stem + ".zip")
+    zip_path      = out / rel.parent / (title_stem + ".zip")
     write_zip_output(zip_path, html_filename, html_content,
                      build_manifest(html_filename, meta.get("manufacturer", "")))
 
     return {**meta,
             "source_file": str(rel),
-            "output_file": str(zip_path.relative_to(OUTPUT_DIR)),
+            "output_file": str(zip_path.relative_to(out)),
             "doc_format":  "html (from txt)"}, None
 
 
@@ -273,7 +276,10 @@ def process_c4i(path):
 # .c4z processing
 # ---------------------------------------------------------------------------
 
-def process_c4z(path):
+def process_c4z(path, source_dir=None, output_dir=None):
+    src = source_dir or SOURCE_DIR
+    out = output_dir or OUTPUT_DIR
+
     try:
         zf = zipfile.ZipFile(path, "r")
     except zipfile.BadZipFile as exc:
@@ -297,7 +303,7 @@ def process_c4z(path):
             return None, "no <documentation> element in driver.xml"
 
         doc_file_attr = doc_el.get("file")
-        rel           = path.relative_to(SOURCE_DIR)
+        rel           = path.relative_to(src)
         url           = build_download_url(path)
 
         # --- file reference ---
@@ -349,13 +355,13 @@ def process_c4z(path):
         )
         title_stem    = to_title_name(rel.stem) + " Driver Documentation"
         html_filename = title_stem + ".html"
-        zip_path      = OUTPUT_DIR / rel.parent / (title_stem + ".zip")
+        zip_path      = out / rel.parent / (title_stem + ".zip")
         write_zip_output(zip_path, html_filename, html_content,
                          build_manifest(html_filename, meta.get("manufacturer", "")))
 
         return {**meta,
                 "source_file": str(rel),
-                "output_file": str(zip_path.relative_to(OUTPUT_DIR)),
+                "output_file": str(zip_path.relative_to(out)),
                 "doc_format":  doc_format}, None
 
 
@@ -370,14 +376,16 @@ CSV_FIELDS = [
 ]
 
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def main(source_dir=None, output_dir=None):
+    src = Path(source_dir) if source_dir else SOURCE_DIR
+    out = Path(output_dir) if output_dir else OUTPUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
 
     records = []
     skipped = []
 
     driver_files = sorted(
-        p for p in SOURCE_DIR.rglob("*")
+        p for p in src.rglob("*")
         if p.suffix.lower() in (".c4i", ".c4z")
     )
 
@@ -385,20 +393,20 @@ def main():
 
     for i, path in enumerate(driver_files, 1):
         if path.suffix.lower() == ".c4i":
-            record, err = process_c4i(path)
+            record, err = process_c4i(path, src, out)
         else:
-            record, err = process_c4z(path)
+            record, err = process_c4z(path, src, out)
 
         if record:
             records.append(record)
         else:
-            skipped.append((str(path.relative_to(SOURCE_DIR)), err))
+            skipped.append((str(path.relative_to(src)), err))
 
         if i % 100 == 0:
             print(f"  {i}/{len(driver_files)} processed...")
 
     # Write index.csv
-    index_path = OUTPUT_DIR / "index.csv"
+    index_path = out / "index.csv"
     with open(index_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -406,16 +414,17 @@ def main():
 
     # Write skipped log
     if skipped:
-        skip_path = OUTPUT_DIR / "skipped.log"
+        skip_path = out / "skipped.log"
         with open(skip_path, "w", encoding="utf-8") as f:
-            for src, reason in skipped:
-                f.write(f"{src}\t{reason}\n")
+            for file, reason in skipped:
+                f.write(f"{file}\t{reason}\n")
 
     print(f"\nDone.")
     print(f"  Extracted : {len(records)}")
-    print(f"  Skipped   : {len(skipped)}  (see {OUTPUT_DIR}/skipped.log)")
+    print(f"  Skipped   : {len(skipped)}  (see {out}/skipped.log)")
     print(f"  Index     : {index_path}")
 
 
 if __name__ == "__main__":
-    main()
+    import gui
+    gui.App().mainloop()
