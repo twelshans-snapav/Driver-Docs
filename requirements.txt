@@ -1,0 +1,2 @@
+markdown==3.10.2
+striprtf==0.0.26

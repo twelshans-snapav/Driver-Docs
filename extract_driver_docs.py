@@ -90,6 +90,7 @@ HTML_TEMPLATE = """\
     h2        {{ font-size: 1.3em;  font-weight: 600; margin: 1.5em 0 0.3em;  color: #222; border-bottom: 1px solid #eee; padding-bottom: 0.2em; }}
     h3        {{ font-size: 1.05em; font-weight: 600; margin: 1.2em 0 0.2em;  color: #333; }}
     p         {{ margin: 0.6em 0; }}
+    img       {{ max-width: 600px; height: auto; display: block; margin: 0.5em 0; }}
   </style>
 </head>
 <body>
@@ -224,12 +225,74 @@ def build_manifest(html_filename, manufacturer):
     )
 
 
-def write_zip_output(zip_path, html_filename, html_content, manifest_content):
-    """Write a zip containing the HTML doc and manifest.txt."""
+def write_zip_output(zip_path, html_filename, html_content, manifest_content, extra_files=None):
+    """Write a zip containing the HTML doc, manifest.txt, and any extra files (e.g. images)."""
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(html_filename, html_content.encode("utf-8"))
         zf.writestr("manifest.txt", manifest_content.encode("utf-8"))
+        if extra_files:
+            for arc_path, data in extra_files.items():
+                zf.writestr(arc_path, data)
+
+
+def collect_images(doc_bytes, source_ext, actual_name, source_zip, lower_map):
+    """Return (updated_doc_bytes, extra_files dict) after resolving local image references.
+
+    Images referenced relative to the doc file are copied into extra_files keyed by
+    their path relative to the output zip root (which is the HTML file's location).
+    References in the doc content are rewritten to match those paths.
+    """
+    doc_dir = Path(actual_name).parent.as_posix()  # e.g. "www"
+
+    if source_ext == ".md":
+        content = doc_bytes.decode("utf-8", errors="replace")
+        pattern = re.compile(r'(!\[[^\]]*\]\()([^)]+)(\))')
+    elif source_ext in (".html", ".htm"):
+        content = doc_bytes.decode("utf-8", errors="replace")
+        pattern = re.compile(r'(<img\b[^>]*\bsrc=")([^"]+)(")', re.IGNORECASE)
+    else:
+        return doc_bytes, {}
+
+    extra_files = {}
+
+    def replace_ref(m):
+        prefix, ref, suffix = m.group(1), m.group(2), m.group(3)
+        # Skip absolute URLs and data URIs
+        if re.match(r'[a-z][a-z0-9+\-.]*://', ref, re.IGNORECASE) or ref.startswith('data:'):
+            return m.group(0)
+        # Resolve the reference relative to the doc file's directory in the zip
+        if ref.startswith('/'):
+            zip_src = ref.lstrip('/')
+        else:
+            zip_src = (Path(doc_dir) / ref).as_posix()
+            # Normalise "./" segments
+            parts = []
+            for part in zip_src.split('/'):
+                if part == '..':
+                    if parts:
+                        parts.pop()
+                elif part not in ('', '.'):
+                    parts.append(part)
+            zip_src = '/'.join(parts)
+
+        actual = lower_map.get(zip_src.lower())
+        if actual is None:
+            return m.group(0)  # leave unchanged if not found
+
+        # Output path: strip the doc's directory prefix so the image sits
+        # alongside the HTML at the zip root, e.g. "docimages/foo.jpg"
+        doc_dir_prefix = doc_dir.rstrip('/') + '/'
+        if zip_src.lower().startswith(doc_dir_prefix.lower()):
+            out_rel = zip_src[len(doc_dir_prefix):]
+        else:
+            out_rel = zip_src
+
+        extra_files[out_rel] = source_zip.read(actual)
+        return prefix + out_rel + suffix
+
+    updated = pattern.sub(replace_ref, content)
+    return updated.encode("utf-8"), extra_files
 
 
 # ---------------------------------------------------------------------------
@@ -321,18 +384,22 @@ def process_c4z(path, source_dir=None, output_dir=None):
             doc_bytes  = zf.read(actual_name)
             source_ext = Path(actual_name).suffix.lower()
 
+            extra_files = {}
+
             if source_ext == ".rtf":
                 plain     = rtf_to_text(doc_bytes.decode("latin-1", errors="replace"), errors="replace")
                 body_html = plain_to_html(plain.strip())
                 doc_format = "html (from rtf)"
 
             elif source_ext == ".md":
+                doc_bytes, extra_files = collect_images(doc_bytes, source_ext, actual_name, zf, lower_map)
                 md_text   = doc_bytes.decode("utf-8", errors="replace")
                 body_html = md_lib.markdown(md_text, extensions=["tables", "fenced_code"])
                 doc_format = "html (from md)"
 
             elif source_ext in (".html", ".htm"):
-                body_html  = extract_body_html(doc_bytes)
+                doc_bytes, extra_files = collect_images(doc_bytes, source_ext, actual_name, zf, lower_map)
+                body_html  = extract_body_html(doc_bytes.decode("utf-8", errors="replace"))
                 doc_format = "html (from html)"
 
             else:
@@ -341,6 +408,7 @@ def process_c4z(path, source_dir=None, output_dir=None):
 
         # --- inline text fallback ---
         else:
+            extra_files = {}
             inline = (doc_el.text or "").strip()
             if not inline:
                 return None, "empty inline <documentation>"
@@ -357,7 +425,8 @@ def process_c4z(path, source_dir=None, output_dir=None):
         html_filename = title_stem + ".html"
         zip_path      = out / rel.parent / (title_stem + ".zip")
         write_zip_output(zip_path, html_filename, html_content,
-                         build_manifest(html_filename, meta.get("manufacturer", "")))
+                         build_manifest(html_filename, meta.get("manufacturer", "")),
+                         extra_files=extra_files)
 
         return {**meta,
                 "source_file": str(rel),
