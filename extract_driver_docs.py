@@ -387,7 +387,11 @@ def process_c4z(path, source_dir=None, output_dir=None):
             extra_files = {}
 
             if source_ext == ".rtf":
-                plain     = rtf_to_text(doc_bytes.decode("latin-1", errors="replace"), errors="replace")
+                rtf_src   = doc_bytes.decode("latin-1", errors="replace")
+                # Some drivers (e.g. Loewe) emit a bare "\bin" with hex image data instead of
+                # "\binN" + raw bytes; striprtf >= 0.0.29 crashes on the missing length.
+                rtf_src   = re.sub(r"\\bin(?![a-z0-9-]) ?", "", rtf_src)
+                plain     = rtf_to_text(rtf_src, errors="replace")
                 body_html = plain_to_html(plain.strip())
                 doc_format = "html (from rtf)"
 
